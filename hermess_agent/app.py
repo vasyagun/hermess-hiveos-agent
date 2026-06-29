@@ -261,20 +261,11 @@ class HermessBot:
     def dispatch(self, chat_id: int, text: str) -> str:
         lowered = text.lower()
         command = lowered.split(maxsplit=1)[0].split("@", 1)[0]
-        help_phrases = [
-            "help",
-            "помощь",
-            "привет",
-            "здарова",
-            "здравствуй",
-            "ты работаешь",
-            "работаешь",
-            "ping",
-            "что ты умеешь",
-            "что умеешь",
-            "команды",
-        ]
-        if command in {"/start", "/help"} or any(phrase in lowered for phrase in help_phrases):
+        if command in {"/start", "/help"} or lowered in {"help", "помощь", "команды"}:
+            return self.help()
+        if any(phrase in lowered for phrase in ["привет", "здарова", "здравствуй", "ты работаешь", "работаешь", "ping"]):
+            return self.greeting()
+        if any(phrase in lowered for phrase in ["что ты умеешь", "что умеешь", "что можешь"]):
             return self.help()
         if lowered.startswith("confirm "):
             return self.confirm(chat_id, text.split(maxsplit=1)[1].strip())
@@ -328,7 +319,7 @@ class HermessBot:
                 return "Команда выглядит разрушительной. Я не буду планировать ее без ручной переработки."
             payload = {"command": "exec", "data": {"cmd": cmd}}
             return self.plan(chat_id, farm, worker, f"Shell exec: {cmd}", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Нет автоматического отката для shell exec.")
-        return self.free_chat(text)
+        return self.handle_natural_text(chat_id, text)
 
     def help(self) -> str:
         return "\n".join(
@@ -352,6 +343,137 @@ class HermessBot:
                 "Можно писать обычным текстом. Для опасных действий я сначала покажу план и попрошу CONFIRM.",
             ]
         )
+
+    def greeting(self) -> str:
+        return "\n".join(
+            [
+                "На связи.",
+                "Можешь писать обычным текстом: `покажи фермы`, `что с rig1`, `подключись к rig1`, `перезапусти майнер на rig1`, `поставь flight sheet X на rig2`.",
+                "Опасные действия я не выполню молча: сначала покажу план и попрошу CONFIRM.",
+            ]
+        )
+
+    def handle_natural_text(self, chat_id: int, text: str) -> str:
+        try:
+            intent = self.interpret_intent(text)
+            return self.execute_intent(chat_id, text, intent)
+        except Exception as exc:
+            return self.free_chat(text)
+
+    def interpret_intent(self, text: str) -> dict[str, Any]:
+        prompt = "\n".join(
+            [
+                "Ты intent parser для Telegram-агента hermess.",
+                "Верни строго один JSON object без markdown и без пояснений.",
+                "Пользователь пишет по-русски обычным текстом. Определи намерение и параметры.",
+                "Допустимые intent:",
+                "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list,",
+                "hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy.",
+                "Поля JSON:",
+                '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","reply":"short-reply-for-chat-or-empty"}',
+                "Правила:",
+                "- если пользователь хочет список ферм: farms_list;",
+                "- если хочет риги/воркеры: workers_list;",
+                "- если спрашивает про конкретный rig/риг/worker: worker_info;",
+                "- если хочет подключиться к ригу/серверу/терминалу/shell: hssh;",
+                "- если хочет развернуть ноду/поставить node по GitHub: node_deploy;",
+                "- если хочет перезапустить майнер: miner_restart;",
+                "- если хочет применить полетный лист/flight sheet: apply_fs;",
+                "- если хочет кошельки: wallets_list;",
+                "- если хочет монеты: coins_list;",
+                "- если это разговор без действия: chat и короткий reply.",
+                f"Сообщение: {text}",
+            ]
+        )
+        raw = self.gonka.ask(prompt)
+        return self.parse_json_object(raw)
+
+    def execute_intent(self, chat_id: int, original_text: str, intent: dict[str, Any]) -> str:
+        name = str(intent.get("intent") or "chat").strip()
+        farm_value = str(intent.get("farm") or "").strip()
+        worker_value = str(intent.get("worker") or "").strip()
+
+        if name == "help":
+            return self.help()
+        if name == "farms_list":
+            return self.show_farms()
+        if name == "coins_list":
+            return self.show_coins()
+        if name in {"workers_list", "flight_sheets_list", "wallets_list"}:
+            farm = self.resolve_farm(farm_value)
+            if name == "workers_list":
+                return self.show_workers(farm)
+            if name == "flight_sheets_list":
+                return self.show_flight_sheets(farm)
+            return self.show_wallets(farm)
+        if name == "worker_info":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            return self.show_worker(farm, worker)
+        if name == "hssh":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            return self.start_hssh(farm, worker)
+        if name == "miner_restart":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            payload = {"command": "miner", "data": {"action": "restart", "miner_index": 0}}
+            return self.plan(chat_id, farm, worker, "Перезапуск майнера", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Повторно выполнить miner start/restart или применить прежний flight sheet.")
+        if name == "apply_fs":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            fs_value = str(intent.get("fs") or "").strip()
+            if not fs_value:
+                return "Понял, надо применить flight sheet. Напиши название или id flight sheet и к какому ригу применить."
+            fs = self.resolve_fs(int(farm["id"]), fs_value)
+            payload = {"fs_id": fs["id"]}
+            current = worker.get("fs_id") or worker.get("flight_sheet_id")
+            return self.plan(chat_id, farm, worker, f"Применить flight sheet {fs.get('name')} ({fs.get('id')})", "PATCH", f"/farms/{farm['id']}/workers/{worker['id']}", payload, f"Вернуть fs_id={current}")
+        if name == "set_oc":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            oc_value = str(intent.get("oc") or "").strip()
+            if not oc_value.isdigit():
+                return "Понял, надо применить OC. Укажи id OC профиля."
+            payload = {"oc_id": int(oc_value), "oc_apply_mode": "replace"}
+            return self.plan(chat_id, farm, worker, f"Применить OC profile {oc_value}", "PATCH", f"/farms/{farm['id']}/workers/{worker['id']}", payload, "Вернуть предыдущий OC profile/config из карточки worker.")
+        if name == "exec":
+            farm = self.resolve_farm(farm_value)
+            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            cmd = str(intent.get("cmd") or "").strip()
+            if not cmd:
+                return "Понял, надо выполнить команду на риге. Напиши саму shell-команду."
+            if self.dangerous_shell(cmd):
+                return "Команда выглядит разрушительной. Я не буду планировать ее без ручной переработки."
+            payload = {"command": "exec", "data": {"cmd": cmd}}
+            return self.plan(chat_id, farm, worker, f"Shell exec: {cmd}", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Нет автоматического отката для shell exec.")
+        if name == "node_deploy":
+            farm_hint = f" farm:{farm_value}" if farm_value else ""
+            worker_hint = f" worker:{worker_value}" if worker_value else ""
+            repo = str(intent.get("repo") or "").strip()
+            repo_hint = f" repo:{repo}" if repo else " repo:<github-url>"
+            return "Понял задачу развернуть ноду. Для этого я сначала подниму Hive Shell и буду вести long-running установку через tmux/systemd. Подтверди параметры или дополни командой:\n" + f"/node_deploy{farm_hint}{worker_hint}{repo_hint}"
+        if name == "package_miner":
+            return "Понял задачу по упаковке майнера для HiveOS. Пришли архив/путь к бинарнику, стартовый скрипт или логи, и имя custom miner."
+
+        reply = str(intent.get("reply") or "").strip()
+        if reply:
+            return reply
+        return self.free_chat(original_text)
+
+    @staticmethod
+    def parse_json_object(raw: str) -> dict[str, Any]:
+        text = raw.strip()
+        if text.startswith("```"):
+            text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+            text = re.sub(r"\s*```$", "", text)
+        match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+        if not match:
+            raise ValueError("No JSON object in model response")
+        parsed = json.loads(match.group(0))
+        if not isinstance(parsed, dict):
+            raise ValueError("Intent response is not an object")
+        return parsed
 
     def free_chat(self, text: str) -> str:
         prompt = "\n".join(
