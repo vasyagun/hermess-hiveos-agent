@@ -235,6 +235,10 @@ class HermessBot:
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             payload = {"command": "miner", "data": {"action": "restart", "miner_index": 0}}
             return self.plan(chat_id, farm, worker, "Перезапуск майнера", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Повторно выполнить miner start/restart или применить прежний flight sheet.")
+        if lowered.startswith("/hssh") or lowered.startswith("/hive_shell"):
+            farm = self.resolve_farm(self.arg(text, "farm"))
+            worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
+            return self.start_hssh(farm, worker)
         if lowered.startswith("/apply_fs"):
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
@@ -270,6 +274,7 @@ class HermessBot:
                 "/coins",
                 "/apply_fs farm:<id|name> worker:<id|name> fs:<id|name>",
                 "/miner_restart farm:<id|name> worker:<id|name>",
+                "/hssh farm:<id|name> worker:<id|name>",
                 "/set_oc farm:<id|name> worker:<id|name> oc:<id>",
                 "/exec farm:<id|name> worker:<id|name> cmd:\"nvidia-smi\"",
                 "/ask <вопрос к Gonka model>",
@@ -307,6 +312,55 @@ class HermessBot:
         coins = self.hive.coins()[:120]
         rows = [[c.get("coin") or c.get("symbol") or c.get("name"), c.get("name", ""), c.get("algo", "")] for c in coins]
         return table(["symbol", "name", "algo"], rows)
+
+    def start_hssh(self, farm: dict[str, Any], worker: dict[str, Any]) -> str:
+        started_at = int(time.time()) - 5
+        path = f"/farms/{farm['id']}/workers/{worker['id']}/command"
+        payload = {"command": "hssh", "data": {"action": "start"}}
+        result = self.hive.request("POST", path, json=payload)
+        link = self.wait_hssh_link(int(farm["id"]), int(worker["id"]), started_at)
+        if link:
+            return "\n".join(
+                [
+                    f"Hive Shell готов для {worker.get('name')} ({worker.get('id')}).",
+                    link,
+                    "Ссылка временная. Для долгих задач запускай процесс в tmux/systemd и проверяй статус отдельно.",
+                ]
+            )
+        return "\n".join(
+            [
+                "Команда hssh отправлена, но ссылка еще не найдена в worker messages.",
+                f"Result: {json.dumps(self.redact(result), ensure_ascii=False)[:1200]}",
+                "Повтори /hssh через несколько секунд или проверь сообщения рига.",
+            ]
+        )
+
+    def wait_hssh_link(self, farm_id: int, worker_id: int, started_at: int) -> str:
+        deadline = time.time() + 60
+        while time.time() < deadline:
+            payload = self.hive.request(
+                "GET",
+                f"/farms/{farm_id}/workers/{worker_id}/messages",
+                params={"with_payload": 1, "start_time": started_at, "per_page": 25},
+            )
+            link = self.extract_hssh_link(payload)
+            if link:
+                return link
+            time.sleep(5)
+        return ""
+
+    @staticmethod
+    def extract_hssh_link(payload: Any) -> str:
+        text = json.dumps(payload, ensure_ascii=False)
+        patterns = [
+            r"ssh\s+[^\s\"']+",
+            r"https?://[^\s\"']*(?:hive|shell|hssh)[^\s\"']*",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(0).replace("\\/", "/")
+        return ""
 
     def plan(self, chat_id: int, farm: dict[str, Any], worker: dict[str, Any], desc: str, method: str, path: str, payload: dict[str, Any], rollback: str) -> str:
         code = secrets.token_hex(3).upper()
@@ -412,4 +466,3 @@ class HermessBot:
 
 if __name__ == "__main__":
     HermessBot().run()
-

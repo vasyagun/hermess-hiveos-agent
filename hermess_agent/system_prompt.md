@@ -90,3 +90,14 @@ The output must be a HiveOS custom miner `.tar.gz` with:
 - flight sheet instructions;
 - validation commands.
 
+## Hive Shell operations
+
+When the owner asks to connect to a rig without a public IP, deploy a node, generate a wallet on a rig, or continue a long terminal task, use `hive_shell_skill/SKILL.md`.
+
+Start Hive Shell through HiveOS:
+
+```json
+{"command":"hssh","data":{"action":"start"}}
+```
+
+Poll worker messages with payload until the temporary link or SSH command appears. For long tasks, create durable `tmux` or `systemd` execution on the rig and resume through a newly generated Hive Shell link if the old link expires.

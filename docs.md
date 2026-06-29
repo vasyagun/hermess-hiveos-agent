@@ -198,3 +198,14 @@ Confirm: CONFIRM <short-id>
 - flight sheet настройки;
 - чеклист проверки на HiveOS.
 
+## Hive Shell operator skill
+
+Скилл для подключения к HiveOS ригам без белого IP через временную Hive Shell / `hssh` ссылку находится в [hive_shell_skill/SKILL.md](hive_shell_skill/SKILL.md).
+
+Основной сценарий:
+
+- агент по HiveOS API отправляет `{"command":"hssh","data":{"action":"start"}}`;
+- ждет worker message с временной ссылкой или SSH-командой;
+- подключается к ригу через доступный shell-канал;
+- долгие задачи запускает через `tmux` или `systemd`;
+- если ссылка истекла, генерирует новую и продолжает проверку по PID, service, tmux session, логам и state-файлу.
