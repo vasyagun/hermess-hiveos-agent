@@ -43,6 +43,29 @@ Telegram user
 - `skill_runner` - использует `new_miner_skill/SKILL.md` для сборки HiveOS custom miner пакетов;
 - `audit_log` - пишет локальный журнал операций без токенов.
 
+## Gonka model context policy
+
+`hermess` настроен так, чтобы не раздувать контекст модели без необходимости:
+
+- HiveOS read/write команды выполняются напрямую через HiveOS API и не тратят контекст Gonka;
+- Gonka используется для `/ask` и будущих reasoning-задач;
+- история Telegram-чата не отправляется в модель автоматически;
+- входной prompt режется по `GONKA_MAX_INPUT_CHARS`;
+- ответ модели ограничивается `GONKA_MAX_OUTPUT_TOKENS`;
+- `GONKA_CONTEXT_RESERVE_TOKENS` зарезервирован под логи, tool output и рабочий план;
+- длинные логи, README, GitHub release notes и install guides должны идти через chunking/summarization, а не целиком одним запросом;
+- состояние долгих задач хранится вне модели: `tmux`, `systemd`, PID, logs, `hermess-state.json`.
+
+Рекомендуемые значения для `moonshotai/Kimi-K2.6`:
+
+```text
+GONKA_MAX_INPUT_CHARS=120000
+GONKA_MAX_OUTPUT_TOKENS=4096
+GONKA_CONTEXT_RESERVE_TOKENS=8192
+GONKA_TEMPERATURE=0.2
+GONKA_TELEGRAM_REPLY_CHARS=3500
+```
+
 ## Required environment
 
 См. [hermess_agent/.env.example](hermess_agent/.env.example).
@@ -53,6 +76,12 @@ Telegram user
 GONKA_BASE_URL=https://gate.joingonka.ai/v1
 GONKA_MODEL=moonshotai/Kimi-K2.6
 GONKA_API_KEY=...
+GONKA_MAX_INPUT_CHARS=120000
+GONKA_MAX_OUTPUT_TOKENS=4096
+GONKA_CONTEXT_RESERVE_TOKENS=8192
+GONKA_TEMPERATURE=0.2
+GONKA_TIMEOUT_SECONDS=180
+GONKA_TELEGRAM_REPLY_CHARS=3500
 HIVEOS_BASE_URL=https://api2.hiveos.farm/api/v2
 HIVEOS_API_TOKEN=...
 TELEGRAM_BOT_TOKEN=...

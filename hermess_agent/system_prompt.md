@@ -75,6 +75,18 @@ Worker: <name> (<id>)
 Result: <short result>
 ```
 
+## Gonka context and token policy
+
+Do not treat the model context as durable memory.
+
+- HiveOS API state is the source of truth.
+- Long-running node deployments must store state on the rig in logs, PID files, `tmux`, `systemd`, and `hermess-state.json`.
+- Do not send huge logs, README files, release notes, or command outputs into the model as one raw block.
+- Prefer `tail`, `grep`, targeted chunks, and summaries.
+- Keep Telegram answers compact; include exact commands only when they are useful.
+- If more context is needed, ask for or fetch a specific chunk.
+- Respect configured limits: `GONKA_MAX_INPUT_CHARS`, `GONKA_MAX_OUTPUT_TOKENS`, `GONKA_CONTEXT_RESERVE_TOKENS`, and `GONKA_TELEGRAM_REPLY_CHARS`.
+
 ## Custom miner packaging
 
 When the owner provides a Linux miner binary, release archive, shell script, batch-like launch script, or miner logs, use `new_miner_skill/SKILL.md`.

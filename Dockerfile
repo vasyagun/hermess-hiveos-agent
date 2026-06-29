@@ -10,7 +10,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY hermess_agent ./hermess_agent
 COPY new_miner_skill ./new_miner_skill
+COPY hive_shell_skill ./hive_shell_skill
 COPY docs.md .
 
 CMD ["python", "-m", "hermess_agent.app"]
-

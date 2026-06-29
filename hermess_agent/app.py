@@ -15,6 +15,26 @@ def env(name: str, default: str = "") -> str:
     return os.getenv(name, default).strip()
 
 
+def env_int(name: str, default: int) -> int:
+    raw = env(name)
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def env_float(name: str, default: float) -> float:
+    raw = env(name)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def mask(value: str, keep: int = 6) -> str:
     if not value:
         return ""
@@ -43,6 +63,7 @@ class Telegram:
     def __init__(self, token: str):
         self.base = f"https://api.telegram.org/bot{token}"
         self.session = requests.Session()
+        self.reply_chars = env_int("GONKA_TELEGRAM_REPLY_CHARS", 3500)
 
     def get_updates(self, offset: int | None) -> list[dict[str, Any]]:
         payload: dict[str, Any] = {"timeout": 45, "allowed_updates": ["message"]}
@@ -53,7 +74,8 @@ class Telegram:
         return response.json().get("result", [])
 
     def send(self, chat_id: int, text: str) -> None:
-        chunks = [text[i : i + 3900] for i in range(0, len(text), 3900)] or [""]
+        limit = min(max(self.reply_chars, 1000), 3900)
+        chunks = [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
         for chunk in chunks:
             response = self.session.post(
                 f"{self.base}/sendMessage",
@@ -68,29 +90,61 @@ class Gonka:
         self.base_url = env("GONKA_BASE_URL", "https://gate.joingonka.ai/v1").rstrip("/")
         self.model = env("GONKA_MODEL", "moonshotai/Kimi-K2.6")
         self.api_key = env("GONKA_API_KEY")
+        self.max_input_chars = env_int("GONKA_MAX_INPUT_CHARS", 120000)
+        self.max_output_tokens = env_int("GONKA_MAX_OUTPUT_TOKENS", 4096)
+        self.context_reserve_tokens = env_int("GONKA_CONTEXT_RESERVE_TOKENS", 8192)
+        self.temperature = env_float("GONKA_TEMPERATURE", 0.2)
+        self.timeout = env_int("GONKA_TIMEOUT_SECONDS", 180)
         self.session = requests.Session()
 
     def ask(self, prompt: str) -> str:
         if not self.api_key:
             return "GONKA_API_KEY не задан."
+        prompt = self.prepare_prompt(prompt)
         response = self.session.post(
             f"{self.base_url}/chat/completions",
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             json={
                 "model": self.model,
+                "max_tokens": self.max_output_tokens,
+                "temperature": self.temperature,
                 "messages": [
                     {
                         "role": "system",
-                        "content": "Ты hermess, краткий Telegram-агент для HiveOS и майнинг-операций. Отвечай по-русски.",
+                        "content": self.system_prompt(),
                     },
                     {"role": "user", "content": prompt},
                 ],
             },
-            timeout=120,
+            timeout=self.timeout,
         )
         response.raise_for_status()
         data = response.json()
         return data["choices"][0]["message"]["content"]
+
+    def prepare_prompt(self, prompt: str) -> str:
+        prompt = prompt.strip()
+        if len(prompt) <= self.max_input_chars:
+            return prompt
+        head = self.max_input_chars // 2
+        tail = self.max_input_chars - head
+        omitted = len(prompt) - self.max_input_chars
+        return (
+            prompt[:head]
+            + f"\n\n[hermess: input compacted, omitted {omitted} characters from the middle. "
+            + "Use retained beginning/end and ask for more specific chunks if needed.]\n\n"
+            + prompt[-tail:]
+        )
+
+    def system_prompt(self) -> str:
+        return (
+            "Ты hermess, краткий Telegram-агент для HiveOS, майнинг-операций, Hive Shell и упаковки custom miners. "
+            "Отвечай по-русски. Учитывай, что ответ идет в Telegram: сначала давай короткий результат, затем команды. "
+            f"Лимит ответа модели: {self.max_output_tokens} tokens. "
+            f"Резерв контекста под инструменты/логи: примерно {self.context_reserve_tokens} tokens. "
+            "Не проси присылать огромные логи целиком: предлагай chunking, tail, grep и summary. "
+            "Для длинных задач храни состояние во внешних файлах, tmux/systemd/logs, а не в контексте модели."
+        )
 
 
 class HiveOS:
