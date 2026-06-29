@@ -261,7 +261,20 @@ class HermessBot:
     def dispatch(self, chat_id: int, text: str) -> str:
         lowered = text.lower()
         command = lowered.split(maxsplit=1)[0].split("@", 1)[0]
-        if command in {"/start", "/help"} or lowered in {"help", "помощь", "ты работаешь?", "работаешь?", "ping"}:
+        help_phrases = [
+            "help",
+            "помощь",
+            "привет",
+            "здарова",
+            "здравствуй",
+            "ты работаешь",
+            "работаешь",
+            "ping",
+            "что ты умеешь",
+            "что умеешь",
+            "команды",
+        ]
+        if command in {"/start", "/help"} or any(phrase in lowered for phrase in help_phrases):
             return self.help()
         if lowered.startswith("confirm "):
             return self.confirm(chat_id, text.split(maxsplit=1)[1].strip())
@@ -315,12 +328,14 @@ class HermessBot:
                 return "Команда выглядит разрушительной. Я не буду планировать ее без ручной переработки."
             payload = {"command": "exec", "data": {"cmd": cmd}}
             return self.plan(chat_id, farm, worker, f"Shell exec: {cmd}", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Нет автоматического отката для shell exec.")
-        return "Не понял команду. Напиши /help."
+        return self.free_chat(text)
 
     def help(self) -> str:
         return "\n".join(
             [
-                "hermess online.",
+                "hermess online. Я управляю HiveOS через Telegram и могу помогать с ригами, Hive Shell и custom miners.",
+                "",
+                "Быстрые команды:",
                 "/farms",
                 "/rigs farm:<id|name>",
                 "/rig farm:<id|name> worker:<id|name>",
@@ -333,8 +348,28 @@ class HermessBot:
                 "/set_oc farm:<id|name> worker:<id|name> oc:<id>",
                 "/exec farm:<id|name> worker:<id|name> cmd:\"nvidia-smi\"",
                 "/ask <вопрос к Gonka model>",
+                "",
+                "Можно писать обычным текстом. Для опасных действий я сначала покажу план и попрошу CONFIRM.",
             ]
         )
+
+    def free_chat(self, text: str) -> str:
+        prompt = "\n".join(
+            [
+                "Пользователь написал hermess в Telegram свободным текстом.",
+                "Ответь как живой оператор майнинг-инфраструктуры, по-русски, коротко и полезно.",
+                "Если пользователь просит действие с HiveOS, предложи точную команду из списка ниже или скажи какие параметры нужны.",
+                "Если это small talk, ответь нормально и по-человечески.",
+                "Доступные команды:",
+                self.help(),
+                "",
+                f"Сообщение пользователя: {text}",
+            ]
+        )
+        try:
+            return self.gonka.ask(prompt)
+        except Exception as exc:
+            return "Я на связи. Могу показать фермы, риги, кошельки, flight sheets, запустить Hive Shell или помочь с custom miner. Напиши /help или конкретную задачу."
 
     def show_farms(self) -> str:
         farms = self.hive.farms()
