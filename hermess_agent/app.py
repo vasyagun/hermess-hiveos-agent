@@ -57,7 +57,7 @@ class Telegram:
         for chunk in chunks:
             response = self.session.post(
                 f"{self.base}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "parse_mode": "HTML", "disable_web_page_preview": True},
+                json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
                 timeout=30,
             )
             response.raise_for_status()
@@ -206,7 +206,8 @@ class HermessBot:
 
     def dispatch(self, chat_id: int, text: str) -> str:
         lowered = text.lower()
-        if lowered in {"/start", "/help", "help", "помощь"}:
+        command = lowered.split(maxsplit=1)[0].split("@", 1)[0]
+        if command in {"/start", "/help"} or lowered in {"help", "помощь", "ты работаешь?", "работаешь?", "ping"}:
             return self.help()
         if lowered.startswith("confirm "):
             return self.confirm(chat_id, text.split(maxsplit=1)[1].strip())
