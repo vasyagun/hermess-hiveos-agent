@@ -436,6 +436,13 @@ class HermessBot:
 
         has_flight_term = any(marker in lowered for marker in ["полет", "полёт", "flight sheet", "flight sheets", "fs"])
         has_coin_word = any(marker in lowered for marker in ["монет", "coin"])
+        wants_apply_fs = has_flight_term and any(marker in lowered for marker in ["запусти", "поставь", "переключи", "примени", "включи", "apply"])
+        if wants_apply_fs:
+            return {
+                "intent": "apply_fs",
+                "worker": self.extract_worker_hint(text),
+                "fs": self.extract_fs_hint(text),
+            }
         coin = self.extract_coin_hint(text) if has_flight_term else ""
         if has_flight_term and coin:
             return {"intent": "flight_sheets_by_coin", "coin": coin}
@@ -556,8 +563,7 @@ class HermessBot:
             payload = {"command": "miner", "data": {"action": "restart", "miner_index": 0}}
             return self.plan(chat_id, farm, worker, "Перезапуск майнера", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Повторно выполнить miner start/restart или применить прежний flight sheet.")
         if name == "apply_fs":
-            farm = self.resolve_farm(farm_value)
-            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            farm, worker = self.resolve_worker_context(farm_value, worker_value)
             fs_value = str(intent.get("fs") or "").strip()
             if not fs_value:
                 return "Понял, надо применить flight sheet. Напиши название или id flight sheet и к какому ригу применить."
@@ -887,6 +893,36 @@ class HermessBot:
         return upper_tokens[-1] if upper_tokens else ""
 
     @staticmethod
+    def extract_fs_hint(text: str) -> str:
+        patterns = [
+            r"(?:полетн\w*|полётн\w*)\s+лист\s+(.+)$",
+            r"flight\s+sheets?\s+(.+)$",
+            r"\bfs[:=\s]+(.+)$",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                value = match.group(1).strip(" .,!?:;`\"'")
+                value = re.sub(r"\s+(?:на|для)\s+(?:риг|worker|воркер|сервер)\b.*$", "", value, flags=re.IGNORECASE).strip()
+                return value
+        return ""
+
+    @staticmethod
+    def extract_worker_hint(text: str) -> str:
+        lowered = text.lower()
+        if any(marker in lowered for marker in ["единствен", "онлайн", "работающ"]):
+            return ""
+        patterns = [
+            r"(?:риг(?:е|у|а)?|worker|воркер(?:е|у|а)?|сервер(?:е|у|а)?)\s+([A-Za-z0-9_.-]{2,64})",
+            r"\bworker[:=\s]+([A-Za-z0-9_.-]{2,64})\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).strip(" .,!?:;`\"'")
+        return ""
+
+    @staticmethod
     def flight_sheet_matches_coin(sheet: dict[str, Any], coin: str) -> bool:
         needle = coin.lower()
         if needle in str(sheet.get("name") or "").lower():
@@ -1068,6 +1104,34 @@ class HermessBot:
 
     def resolve_fs(self, farm_id: int, value: str) -> dict[str, Any]:
         return self.resolve(self.hive.flight_sheets(farm_id), value, "flight sheet")
+
+    def resolve_worker_context(self, farm_value: str, worker_value: str) -> tuple[dict[str, Any], dict[str, Any]]:
+        if farm_value:
+            farm = self.resolve_farm(farm_value)
+            return farm, self.resolve_worker(int(farm["id"]), worker_value)
+        if worker_value:
+            matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            lowered = worker_value.lower()
+            farms = self.hive.farms()
+            for farm in farms:
+                for worker in self.hive.workers(int(farm["id"])):
+                    name = str(worker.get("name") or "")
+                    if str(worker.get("id")) == worker_value or name.lower() == lowered:
+                        matches.append((farm, worker))
+            if not matches:
+                for farm in farms:
+                    for worker in self.hive.workers(int(farm["id"])):
+                        if lowered in str(worker.get("name") or "").lower():
+                            matches.append((farm, worker))
+            if len(matches) == 1:
+                return matches[0]
+            if not matches:
+                raise RuntimeError(f"worker не найден: {worker_value}")
+            raise RuntimeError("Найдено несколько worker: " + ", ".join(f"{w.get('name')}({w.get('id')}) farm {f.get('name')}" for f, w in matches))
+        context = self.single_online_worker()
+        if context:
+            return context
+        raise RuntimeError("Не могу выбрать риг автоматически: укажи farm/worker или сначала попроси показать онлайн-риги.")
 
     @staticmethod
     def resolve(items: list[dict[str, Any]], value: str, entity: str) -> dict[str, Any]:

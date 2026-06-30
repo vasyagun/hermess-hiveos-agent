@@ -62,6 +62,7 @@ Examples:
 - "Какие полетные листы есть для монеты PEARL?" -> `flight_sheets_by_coin`, coin `PEARL`.
 - "Сгенерируй hive shell ссылку для моего единственного рига который сейчас онлайн" -> scan all farms, find the single online worker, start `hssh`.
 - "Сколько денег у меня осталось на балансе hive аккаунта?" -> read `GET /account` and show balance/billing fields.
+- "Запусти на единственно работающем риге полетный лист Pearl + MDL K1pool" -> `apply_fs`, flight sheet name `Pearl + MDL K1pool`, target is the single online worker, then show CONFIRM plan. Do not reinterpret `MDL` as the requested coin list.
 
 ## Response format
 
