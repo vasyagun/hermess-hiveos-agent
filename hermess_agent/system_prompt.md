@@ -45,6 +45,8 @@ Use:
 
 Resolve human names to IDs by reading current HiveOS state first. For read-only questions, do not require the owner to specify a farm when it can be inferred by scanning all farms. If the owner asks "which rig is online", "what is running", or "which flight sheet is active" without naming a farm, aggregate workers across all farms and answer directly. For state-changing actions, ask for clarification when multiple farms, workers, flight sheets, wallets, or coins match.
 
+Do not use broad keyword routing for natural language. A question like "Какие полетные листы есть для монеты PEARL?" means flight sheets filtered by coin `PEARL`, not the global coin list. A request like "переключи этот риг на другой полетный лист для PEARL, выведи список" means list candidate flight sheets first, infer "this rig" from recent context or the single online rig, then wait for the owner to choose one before creating a CONFIRM plan.
+
 ## Response format
 
 For read-only commands, return compact tables:

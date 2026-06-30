@@ -315,71 +315,56 @@ class HermessBot:
     def dispatch(self, chat_id: int, text: str) -> str:
         lowered = text.lower()
         command = lowered.split(maxsplit=1)[0].split("@", 1)[0]
-        if command in {"/start", "/help"} or lowered in {"help", "помощь", "команды"}:
+        if command in {"/start", "/help"}:
             return self.help()
-        if any(phrase in lowered for phrase in ["привет", "здарова", "здравствуй", "ты работаешь", "работаешь", "ping"]):
-            return self.greeting()
-        if any(phrase in lowered for phrase in ["что ты умеешь", "что умеешь", "что можешь"]):
-            return self.help()
-        if any(phrase in lowered for phrase in ["о чем мы говорили", "что мы обсуждали", "напомни контекст", "что было выше"]):
-            return self.summarize_memory(chat_id)
         if lowered.startswith("confirm "):
             return self.confirm(chat_id, text.split(maxsplit=1)[1].strip())
-        if lowered.startswith("/ask ") or lowered.startswith("спроси "):
+        if command == "/ask":
             prompt = text.split(maxsplit=1)[1]
             return self.gonka.ask(self.with_context(chat_id, prompt))
-        token = extract_jwt(text)
-        token_context = (lowered + "\n" + self.recent_context(chat_id).lower())
-        if token and any(marker in token_context for marker in ["hive", "хайв", "hiveos_api_token", "401", "токен", "ключ"]):
-            return self.update_hive_token(token)
-        if "hiveos_api_token" in lowered or "hive os токен" in lowered or "ключ для доступа" in lowered or "ключ для хайв" in lowered:
-            if token:
-                return self.update_hive_token(token)
-        if "риг" in lowered and any(marker in lowered for marker in ["онлайн", "online", "запущ", "работает", "полетный", "полётный", "flight"]):
-            return self.show_workers_all_farms(online_only=True)
-        if lowered.startswith("/farms") or "покажи фермы" in lowered:
+        if command == "/farms":
             return self.show_farms()
-        if lowered.startswith("/rigs") or "покажи риги" in lowered:
+        if command == "/rigs":
             farm_value = self.arg(text, "farm")
             if not farm_value:
                 return self.show_workers_all_farms(online_only="онлайн" in lowered)
             farm = self.resolve_farm(farm_value)
             return self.show_workers(farm)
-        if lowered.startswith("/rig "):
+        if command == "/rig":
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             return self.show_worker(farm, worker)
-        if lowered.startswith("/flight_sheets") or "покажи полетные" in lowered or "покажи полётные" in lowered or "flight sheets" in lowered:
+        if command == "/flight_sheets":
             farm = self.resolve_farm(self.arg(text, "farm"))
             return self.show_flight_sheets(farm)
-        if lowered.startswith("/wallets") or "кошель" in lowered:
+        if command == "/wallets":
             farm = self.resolve_farm(self.arg(text, "farm"))
             return self.show_wallets(farm)
-        if lowered.startswith("/coins") or "монет" in lowered:
+        if command == "/coins":
             return self.show_coins()
-        if lowered.startswith("/miner_restart"):
+        if command == "/miner_restart":
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             payload = {"command": "miner", "data": {"action": "restart", "miner_index": 0}}
             return self.plan(chat_id, farm, worker, "Перезапуск майнера", "POST", f"/farms/{farm['id']}/workers/{worker['id']}/command", payload, "Повторно выполнить miner start/restart или применить прежний flight sheet.")
-        if lowered.startswith("/hssh") or lowered.startswith("/hive_shell"):
+        if command in {"/hssh", "/hive_shell"}:
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             return self.start_hssh(farm, worker)
-        if lowered.startswith("/apply_fs"):
+        if command == "/apply_fs":
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             fs = self.resolve_fs(farm["id"], self.arg(text, "fs"))
             payload = {"fs_id": fs["id"]}
             current = worker.get("fs_id") or worker.get("flight_sheet_id")
             return self.plan(chat_id, farm, worker, f"Применить flight sheet {fs.get('name')} ({fs.get('id')})", "PATCH", f"/farms/{farm['id']}/workers/{worker['id']}", payload, f"Вернуть fs_id={current}")
-        if lowered.startswith("/set_oc"):
+        if command == "/set_oc":
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             oc_id = int(self.arg(text, "oc"))
             payload = {"oc_id": oc_id, "oc_apply_mode": "replace"}
             return self.plan(chat_id, farm, worker, f"Применить OC profile {oc_id}", "PATCH", f"/farms/{farm['id']}/workers/{worker['id']}", payload, "Вернуть предыдущий OC profile/config из карточки worker.")
-        if lowered.startswith("/exec"):
+        if command == "/exec":
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             cmd = self.arg(text, "cmd")
@@ -437,13 +422,16 @@ class HermessBot:
                 "Учитывай историю чата: пользователь может писать 'что это значит', 'вот опять', 'замени его' после предыдущей ошибки.",
                 "Допустимые intent:",
                 "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list,",
-                "hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy, update_hive_token.",
+                "flight_sheets_by_coin, hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy, update_hive_token.",
                 "Поля JSON:",
-                '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
+                '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","coin":"coin-symbol-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
                 "Правила:",
                 "- если пользователь хочет список ферм: farms_list;",
                 "- если хочет риги/воркеры, спрашивает кто онлайн, что сейчас запущено или какой полетный лист: workers_list;",
                 "- если спрашивает про конкретный rig/риг/worker: worker_info;",
+                "- если пользователь спрашивает какие полетные листы/flight sheets есть для монеты/coin X: flight_sheets_by_coin с coin=X;",
+                "- если пользователь просит переключить этот риг на другой полетный лист для coin X и вывести список: flight_sheets_by_coin с coin=X;",
+                "- не выбирай coins_list, если пользователь спрашивает не список монет, а полетные листы для монеты;",
                 "- если хочет подключиться к ригу/серверу/терминалу/shell: hssh;",
                 "- если хочет развернуть ноду/поставить node по GitHub: node_deploy;",
                 "- если хочет перезапустить майнер: miner_restart;",
@@ -465,6 +453,7 @@ class HermessBot:
         name = str(intent.get("intent") or "chat").strip()
         farm_value = str(intent.get("farm") or "").strip()
         worker_value = str(intent.get("worker") or "").strip()
+        coin_value = str(intent.get("coin") or "").strip()
 
         if name == "help":
             return self.help()
@@ -472,6 +461,8 @@ class HermessBot:
             return self.show_farms()
         if name == "coins_list":
             return self.show_coins()
+        if name == "flight_sheets_by_coin":
+            return self.show_flight_sheets_by_coin(farm_value, coin_value, original_text)
         if name in {"workers_list", "flight_sheets_list", "wallets_list"}:
             if name == "workers_list" and not farm_value:
                 original_lower = original_text.lower()
@@ -632,7 +623,8 @@ class HermessBot:
             [
                 "Пользователь написал hermess в Telegram свободным текстом.",
                 "Ответь как живой оператор майнинг-инфраструктуры, по-русски, коротко и полезно.",
-                "Если пользователь просит действие с HiveOS, предложи точную команду из списка ниже или скажи какие параметры нужны.",
+                "Если пользователь просит действие с HiveOS, опирайся на историю и скажи какие параметры нужны.",
+                "Если пользователь спрашивает полетные листы для монеты, не отвечай списком монет; нужен список flight sheets.",
                 "Если это small talk, ответь нормально и по-человечески.",
                 "Доступные команды:",
                 self.help(),
@@ -764,6 +756,101 @@ class HermessBot:
         sheets = self.hive.flight_sheets(int(farm["id"]))
         rows = [[fs.get("id"), fs.get("name"), fs.get("workers_count", ""), len(fs.get("items") or [])] for fs in sheets]
         return f"Farm: {farm.get('name')} ({farm.get('id')})\n" + table(["id", "name", "workers", "items"], rows)
+
+    def show_flight_sheets_by_coin(self, farm_value: str, coin_value: str, original_text: str) -> str:
+        coin = coin_value or self.extract_coin_hint(original_text)
+        if not coin:
+            return "Понял, надо показать flight sheets по монете. Укажи coin, например: `Какие полетные листы есть для PEARL?`"
+
+        farms: list[dict[str, Any]]
+        if farm_value:
+            farms = [self.resolve_farm(farm_value)]
+        elif "этот" in original_text.lower():
+            context = self.single_online_worker()
+            farms = [context[0]] if context else self.hive.farms()
+        else:
+            farms = self.hive.farms()
+
+        rows: list[list[Any]] = []
+        scanned = 0
+        for farm in farms:
+            sheets = self.hive.flight_sheets(int(farm["id"]))
+            scanned += len(sheets)
+            for sheet in sheets:
+                if self.flight_sheet_matches_coin(sheet, coin):
+                    rows.append([
+                        farm.get("name"),
+                        sheet.get("id"),
+                        sheet.get("name"),
+                        sheet.get("workers_count", ""),
+                        self.flight_sheet_summary(sheet),
+                    ])
+
+        if not rows:
+            return f"Flight sheets для {coin.upper()} не нашел. Проверено листов: {scanned}, ферм: {len(farms)}."
+
+        prefix = f"Flight sheets для {coin.upper()}: {len(rows)}"
+        if "переключ" in original_text.lower() or "постав" in original_text.lower():
+            context = self.single_online_worker()
+            if context:
+                farm, worker = context
+                prefix += f"\nТекущий выбранный риг по контексту: {worker.get('name')} ({worker.get('id')}) на farm {farm.get('name')}."
+                prefix += "\nВыбери id flight sheet, и я подготовлю CONFIRM-план переключения."
+        return prefix + "\n" + table(["farm", "fs id", "name", "workers", "summary"], rows)
+
+    @staticmethod
+    def extract_coin_hint(text: str) -> str:
+        patterns = [
+            r"\bcoin[:=\s]+([A-Za-z0-9_-]{2,20})\b",
+            r"\bмонет[аыуе]?\s+([A-Za-z0-9_-]{2,20})\b",
+            r"\bдля\s+([A-Z0-9_-]{2,20})\b",
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, flags=re.IGNORECASE)
+            if match:
+                return match.group(1).upper()
+        upper_tokens = re.findall(r"\b[A-Z0-9]{2,12}\b", text)
+        return upper_tokens[-1] if upper_tokens else ""
+
+    @staticmethod
+    def flight_sheet_matches_coin(sheet: dict[str, Any], coin: str) -> bool:
+        needle = coin.lower()
+        if needle in str(sheet.get("name") or "").lower():
+            return True
+        for item in sheet.get("items") or []:
+            if not isinstance(item, dict):
+                continue
+            for key in ("coin", "coin_name", "wallet_coin"):
+                if needle == str(item.get(key) or "").lower():
+                    return True
+            nested = json.dumps({key: item.get(key) for key in ("coin", "coin_name", "wallet", "wallets") if key in item}, ensure_ascii=False).lower()
+            if needle in nested:
+                return True
+        return False
+
+    @staticmethod
+    def flight_sheet_summary(sheet: dict[str, Any]) -> str:
+        items = sheet.get("items") or []
+        parts = []
+        for item in items[:3]:
+            if isinstance(item, dict):
+                miner = item.get("miner") or item.get("miner_name") or item.get("miner_alt") or ""
+                coin = item.get("coin") or item.get("coin_name") or ""
+                pool = item.get("pool") or item.get("pool_name") or ""
+                bits = [str(value) for value in [coin, miner, pool] if value]
+                if bits:
+                    parts.append("/".join(bits))
+        if parts:
+            return "; ".join(parts)
+        return str(sheet.get("miner_alt") or "")
+
+    def single_online_worker(self) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        found: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for farm in self.hive.farms():
+            for worker in self.hive.workers(int(farm["id"])):
+                if self.worker_is_online(worker):
+                    found.append((farm, worker))
+        return found[0] if len(found) == 1 else None
 
     def show_wallets(self, farm: dict[str, Any]) -> str:
         wallets = self.hive.wallets(int(farm["id"]))
