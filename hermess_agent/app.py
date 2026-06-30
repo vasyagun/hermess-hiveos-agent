@@ -81,23 +81,33 @@ class Telegram:
         self.reply_chars = env_int("GONKA_TELEGRAM_REPLY_CHARS", 3500)
 
     def get_updates(self, offset: int | None) -> list[dict[str, Any]]:
-        payload: dict[str, Any] = {"timeout": 45, "allowed_updates": ["message"]}
+        payload: dict[str, Any] = {"timeout": 45, "allowed_updates": ["message", "callback_query"]}
         if offset is not None:
             payload["offset"] = offset
         response = self.session.get(f"{self.base}/getUpdates", params=payload, timeout=60)
         response.raise_for_status()
         return response.json().get("result", [])
 
-    def send(self, chat_id: int, text: str) -> None:
+    def send(self, chat_id: int, text: str, reply_markup: dict[str, Any] | None = None) -> None:
         limit = min(max(self.reply_chars, 1000), 3900)
         chunks = [text[i : i + limit] for i in range(0, len(text), limit)] or [""]
-        for chunk in chunks:
+        for index, chunk in enumerate(chunks):
+            payload: dict[str, Any] = {"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True}
+            if reply_markup and index == 0:
+                payload["reply_markup"] = reply_markup
             response = self.session.post(
                 f"{self.base}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk, "disable_web_page_preview": True},
+                json=payload,
                 timeout=30,
             )
             response.raise_for_status()
+
+    def answer_callback_query(self, callback_query_id: str, text: str = "") -> None:
+        payload = {"callback_query_id": callback_query_id}
+        if text:
+            payload["text"] = text
+        response = self.session.post(f"{self.base}/answerCallbackQuery", json=payload, timeout=15)
+        response.raise_for_status()
 
 
 class Gonka:
@@ -226,6 +236,12 @@ class PendingAction:
     rollback: str
 
 
+@dataclass
+class OutgoingMessage:
+    text: str
+    reply_markup: dict[str, Any] | None = None
+
+
 class HermessBot:
     def __init__(self) -> None:
         token = env("TELEGRAM_BOT_TOKEN")
@@ -295,6 +311,10 @@ class HermessBot:
                 time.sleep(5)
 
     def handle_update(self, update: dict[str, Any]) -> None:
+        callback = update.get("callback_query")
+        if callback:
+            self.handle_callback(callback)
+            return
         message = update.get("message") or {}
         text = (message.get("text") or "").strip()
         chat_id = int(message.get("chat", {}).get("id", 0))
@@ -307,8 +327,38 @@ class HermessBot:
             reply = self.dispatch(chat_id, text)
         except Exception as exc:
             reply = f"Ошибка: {exc}"
-        self.telegram.send(chat_id, reply)
+        outgoing = reply if isinstance(reply, OutgoingMessage) else OutgoingMessage(str(reply))
+        self.telegram.send(chat_id, outgoing.text, outgoing.reply_markup)
         self.remember(chat_id, "user", text)
+        self.remember(chat_id, "assistant", outgoing.text)
+
+    def handle_callback(self, callback: dict[str, Any]) -> None:
+        callback_id = str(callback.get("id") or "")
+        message = callback.get("message") or {}
+        chat_id = int(message.get("chat", {}).get("id", 0))
+        user_id = int((callback.get("from") or {}).get("id", 0))
+        data = str(callback.get("data") or "")
+        if not chat_id or not self.authorized(chat_id, user_id):
+            if callback_id:
+                self.telegram.answer_callback_query(callback_id, "Доступ запрещен.")
+            return
+        try:
+            if data.startswith("confirm:"):
+                reply = self.confirm(chat_id, data.split(":", 1)[1])
+                notice = "Выполняю."
+            elif data.startswith("cancel:"):
+                reply = self.cancel(chat_id, data.split(":", 1)[1])
+                notice = "Отменено."
+            else:
+                reply = "Не понял кнопку."
+                notice = reply
+        except Exception as exc:
+            reply = f"Ошибка: {exc}"
+            notice = "Ошибка."
+        if callback_id:
+            self.telegram.answer_callback_query(callback_id, notice)
+        self.telegram.send(chat_id, reply)
+        self.remember(chat_id, "user", f"[button] {data}")
         self.remember(chat_id, "assistant", reply)
 
     def authorized(self, chat_id: int, user_id: int) -> bool:
@@ -1021,8 +1071,7 @@ class HermessBot:
         return "\n".join(
             [
                 "Команда hssh отправлена, но ссылка еще не найдена в worker messages.",
-                f"Result: {json.dumps(self.redact(result), ensure_ascii=False)[:1200]}",
-                "Повтори /hssh через несколько секунд или проверь сообщения рига.",
+                "Обычно HiveOS публикует ссылку с задержкой. Повтори запрос через несколько секунд, и я попробую забрать ссылку снова.",
             ]
         )
 
@@ -1053,20 +1102,32 @@ class HermessBot:
                 return match.group(0).replace("\\/", "/")
         return ""
 
-    def plan(self, chat_id: int, farm: dict[str, Any], worker: dict[str, Any], desc: str, method: str, path: str, payload: dict[str, Any], rollback: str) -> str:
+    def plan(self, chat_id: int, farm: dict[str, Any], worker: dict[str, Any], desc: str, method: str, path: str, payload: dict[str, Any], rollback: str) -> OutgoingMessage:
         code = secrets.token_hex(3).upper()
         self.pending[code] = PendingAction(time.time(), chat_id, int(farm["id"]), int(worker["id"]), method, path, payload, desc, rollback)
-        return "\n".join(
+        text = "\n".join(
             [
-                f"Plan {code}",
-                f"Farm: {farm.get('name')} ({farm.get('id')})",
-                f"Worker: {worker.get('name')} ({worker.get('id')})",
-                f"Action: {desc}",
-                f"API: {method} {path}",
-                f"Payload: {json.dumps(self.redact(payload), ensure_ascii=False)}",
-                f"Rollback: {rollback}",
-                f"Confirm: CONFIRM {code}",
+                "Я понял задачу и подготовил изменение.",
+                "",
+                f"Что сделать: {desc}",
+                f"Где: {farm.get('name')} / {worker.get('name')}",
+                "",
+                "Это изменит конфигурацию рига. Нажми кнопку подтверждения или напиши:",
+                f"CONFIRM {code}",
+                "",
+                "Если передумал, нажми «Отмена».",
             ]
+        )
+        return OutgoingMessage(
+            text,
+            {
+                "inline_keyboard": [
+                    [
+                        {"text": "Подтвердить", "callback_data": f"confirm:{code}"},
+                        {"text": "Отмена", "callback_data": f"cancel:{code}"},
+                    ]
+                ]
+            },
         )
 
     def confirm(self, chat_id: int, code: str) -> str:
@@ -1079,10 +1140,24 @@ class HermessBot:
             return "Подтверждение истекло."
         result = self.hive.request(action.method, action.path, json=action.payload)
         self.pending.pop(code, None)
-        self.audit(action)
-        return f"Done: {action.description}\nResult: {json.dumps(self.redact(result), ensure_ascii=False)[:1500]}"
+        self.audit(action, result)
+        return "\n".join(
+            [
+                "Готово.",
+                f"Выполнено: {action.description}",
+                "Сырые данные HiveOS не вывожу в чат, чтобы не светить конфиги и пароли рига.",
+            ]
+        )
 
-    def audit(self, action: PendingAction) -> None:
+    def cancel(self, chat_id: int, code: str) -> str:
+        code = code.strip().upper()
+        action = self.pending.get(code)
+        if not action or action.chat_id != chat_id:
+            return "Нет такого ожидающего подтверждения."
+        self.pending.pop(code, None)
+        return f"Отменил: {action.description}"
+
+    def audit(self, action: PendingAction, result: Any | None = None) -> None:
         record = {
             "ts": int(time.time()),
             "farm_id": action.farm_id,
@@ -1092,6 +1167,8 @@ class HermessBot:
             "payload": self.redact(action.payload),
             "description": action.description,
         }
+        if result is not None:
+            record["result"] = self.redact(result)
         with open(self.audit_log, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
@@ -1180,6 +1257,10 @@ class HermessBot:
             return redacted
         if isinstance(value, list):
             return [HermessBot.redact(item) for item in value]
+        if isinstance(value, str):
+            value = redact_text(value)
+            value = re.sub(r'(?im)^(\s*(?:RIG_PASSWD|PASSWORD|PASSWD|API_KEY|TOKEN|SECRET)\s*=\s*)["\']?[^"\'\n]+["\']?', r"\1***", value)
+            return value
         return value
 
 
