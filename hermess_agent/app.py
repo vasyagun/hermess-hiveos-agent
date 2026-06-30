@@ -511,6 +511,29 @@ class HermessBot:
             return {"intent": "coins_list"}
 
         has_worker_word = any(marker in lowered for marker in ["риг", "worker", "воркер", "сервер"])
+        has_status_term = any(
+            marker in lowered
+            for marker in [
+                "хешрейт",
+                "hashrate",
+                "hash rate",
+                "hash",
+                "температур",
+                "temp",
+                "потреблен",
+                "потребля",
+                "power",
+                "ватт",
+                "fan",
+                "вентил",
+                "что с",
+                "статус",
+                "работает",
+                "запущ",
+            ]
+        )
+        if has_worker_word and has_status_term:
+            return {"intent": "worker_status", "worker": self.extract_worker_hint(text)}
         if has_worker_word and any(marker in lowered for marker in ["онлайн", "online", "запущ", "работает", "полет", "полёт", "flight"]):
             return {"intent": "workers_list"}
         if any(marker in lowered for marker in ["перезапусти майнер", "рестарт майнер", "restart miner"]):
@@ -525,7 +548,7 @@ class HermessBot:
                 "Пользователь пишет по-русски обычным текстом. Определи намерение и параметры.",
                 "Учитывай историю чата: пользователь может писать 'что это значит', 'вот опять', 'замени его' после предыдущей ошибки.",
                 "Допустимые intent:",
-                "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list, account_balance,",
+                "help, chat, farms_list, workers_list, worker_info, worker_status, flight_sheets_list, wallets_list, coins_list, account_balance,",
                 "flight_sheets_by_coin, hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy, update_hive_token.",
                 "Поля JSON:",
                 '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","coin":"coin-symbol-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
@@ -533,6 +556,7 @@ class HermessBot:
                 "- сначала осмысли задачу, затем выдели сущности: farm, worker/rig, coin, flight sheet, wallet, action, safety;",
                 "- проверь, какие данные нужны: если это чтение, можно сканировать все фермы; если запись, нужна однозначная сущность и CONFIRM;",
                 "- если пользователь хочет список ферм: farms_list;",
+                "- если спрашивает хешрейт/hashrate, температуру, потребление, статус или что запущено на риге: worker_status;",
                 "- если хочет риги/воркеры, спрашивает кто онлайн, что сейчас запущено или какой полетный лист: workers_list;",
                 "- если спрашивает про конкретный rig/риг/worker: worker_info;",
                 "- если пользователь спрашивает какие полетные листы/flight sheets есть для монеты/coin X: flight_sheets_by_coin с coin=X;",
@@ -574,6 +598,9 @@ class HermessBot:
             return self.show_account_balance()
         if name == "flight_sheets_by_coin":
             return self.show_flight_sheets_by_coin(farm_value, coin_value, original_text)
+        if name == "worker_status":
+            farm, worker = self.resolve_worker_context(farm_value, worker_value)
+            return self.show_worker_status(farm, worker)
         if name in {"workers_list", "flight_sheets_list", "wallets_list"}:
             if name == "workers_list" and not farm_value:
                 original_lower = original_text.lower()
@@ -871,6 +898,18 @@ class HermessBot:
     def show_worker(self, farm: dict[str, Any], worker: dict[str, Any]) -> str:
         full = self.hive.worker(int(farm["id"]), int(worker["id"]))
         return json.dumps(self.redact(full), ensure_ascii=False, indent=2)[:3500]
+
+    def show_worker_status(self, farm: dict[str, Any], worker: dict[str, Any]) -> str:
+        enriched = self.enrich_worker_for_status(farm, worker)
+        rows = [
+            ["farm", farm.get("name")],
+            ["rig", f"{enriched.get('name')} ({enriched.get('id')})"],
+            ["online", "yes" if self.worker_is_online(enriched) else "no"],
+            ["miner", self.worker_miner(enriched) or "unknown"],
+            ["hashrate", self.worker_hashrate(enriched) or "unknown"],
+            ["flight sheet", self.worker_flight_sheet(enriched)],
+        ]
+        return "Статус рига:\n" + table(["field", "value"], rows)
 
     def show_flight_sheets(self, farm: dict[str, Any]) -> str:
         sheets = self.hive.flight_sheets(int(farm["id"]))
