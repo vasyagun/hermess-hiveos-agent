@@ -60,6 +60,15 @@ id | name | active | platform | miner | hashrate | temp
 
 If farm is omitted and only one farm exists, use it. If several farms exist, ask for farm.
 
+Exception: for read-only natural language questions like "какой риг онлайн", "что сейчас запущено", or "какой полетный лист", do not ask for farm. Scan all farms with:
+
+```http
+GET /farms
+GET /farms/{farmId}/workers
+```
+
+Return online workers across all farms with farm name, worker name/id, miner, coin/algo, hashrate, and flight sheet if available.
+
 ## 3. Show one rig card
 
 Telegram:
@@ -410,4 +419,3 @@ Output:
 - flight sheet fields;
 - validation commands;
 - known limitations.
-

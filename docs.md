@@ -211,6 +211,7 @@ Confirm: CONFIRM <short-id>
 
 - имена ферм: `GET /farms`, вывести `id`, `name`, статус/баланс если есть;
 - имена ригов: `GET /farms/{farmId}/workers`, вывести `id`, `name`, `platform`, `active`, miner summary;
+- онлайн-риги без указанной farm: пройти `GET /farms`, затем `GET /farms/{farmId}/workers` по каждой ферме и вывести online, miner/coin/algo, hashrate и flight sheet;
 - полетные листы: `GET /farms/{farmId}/fs`, вывести `id`, `name`, `items`, `workers_count`;
 - сохраненные кошельки: `GET /farms/{farmId}/wallets`, вывести `id`, `name`, `coin`, маскированный `wal`;
 - монеты: `GET /hive/coins`, группировать по symbol/name;

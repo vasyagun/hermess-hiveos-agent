@@ -338,7 +338,10 @@ class HermessBot:
         if lowered.startswith("/farms") or "покажи фермы" in lowered:
             return self.show_farms()
         if lowered.startswith("/rigs") or "покажи риги" in lowered:
-            farm = self.resolve_farm(self.arg(text, "farm"))
+            farm_value = self.arg(text, "farm")
+            if not farm_value:
+                return self.show_workers_all_farms(online_only="онлайн" in lowered)
+            farm = self.resolve_farm(farm_value)
             return self.show_workers(farm)
         if lowered.startswith("/rig "):
             farm = self.resolve_farm(self.arg(text, "farm"))
@@ -437,7 +440,7 @@ class HermessBot:
                 '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
                 "Правила:",
                 "- если пользователь хочет список ферм: farms_list;",
-                "- если хочет риги/воркеры: workers_list;",
+                "- если хочет риги/воркеры, спрашивает кто онлайн, что сейчас запущено или какой полетный лист: workers_list;",
                 "- если спрашивает про конкретный rig/риг/worker: worker_info;",
                 "- если хочет подключиться к ригу/серверу/терминалу/shell: hssh;",
                 "- если хочет развернуть ноду/поставить node по GitHub: node_deploy;",
@@ -468,6 +471,10 @@ class HermessBot:
         if name == "coins_list":
             return self.show_coins()
         if name in {"workers_list", "flight_sheets_list", "wallets_list"}:
+            if name == "workers_list" and not farm_value:
+                original_lower = original_text.lower()
+                online_only = any(marker in original_lower for marker in ["онлайн", "online", "запущено", "работает", "активен"])
+                return self.show_workers_all_farms(online_only=online_only)
             farm = self.resolve_farm(farm_value)
             if name == "workers_list":
                 return self.show_workers(farm)
@@ -643,9 +650,105 @@ class HermessBot:
         workers = self.hive.workers(int(farm["id"]))
         rows = []
         for worker in workers:
-            stats = worker.get("stats") or {}
-            rows.append([worker.get("id"), worker.get("name"), worker.get("active", ""), worker.get("platform", ""), stats.get("miner", ""), stats.get("hs", "")])
-        return f"Farm: {farm.get('name')} ({farm.get('id')})\n" + table(["id", "name", "active", "platform", "miner", "hashrate"], rows)
+            rows.append(self.worker_row(farm, self.enrich_worker_for_status(farm, worker)))
+        return f"Farm: {farm.get('name')} ({farm.get('id')})\n" + table(["farm", "id", "name", "online", "miner", "hashrate", "flight sheet"], rows)
+
+    def show_workers_all_farms(self, online_only: bool = False) -> str:
+        farms = self.hive.farms()
+        rows: list[list[Any]] = []
+        total = 0
+        for farm in farms:
+            workers = self.hive.workers(int(farm["id"]))
+            for worker in workers:
+                total += 1
+                if online_only and not self.worker_is_online(worker):
+                    continue
+                rows.append(self.worker_row(farm, self.enrich_worker_for_status(farm, worker)))
+        if not rows:
+            if online_only:
+                return f"Онлайн-ригов не нашел. Проверено ригов: {total}, ферм: {len(farms)}."
+            return "Ригов не нашел."
+        title = "Онлайн-риги по всем фермам" if online_only else "Риги по всем фермам"
+        return f"{title}: {len(rows)} из {total}\n" + table(["farm", "id", "name", "online", "miner", "hashrate", "flight sheet"], rows)
+
+    def worker_row(self, farm: dict[str, Any], worker: dict[str, Any]) -> list[Any]:
+        return [
+            farm.get("name"),
+            worker.get("id"),
+            worker.get("name"),
+            "yes" if self.worker_is_online(worker) else "no",
+            self.worker_miner(worker),
+            self.worker_hashrate(worker),
+            self.worker_flight_sheet(worker),
+        ]
+
+    def enrich_worker_for_status(self, farm: dict[str, Any], worker: dict[str, Any]) -> dict[str, Any]:
+        if not self.worker_is_online(worker):
+            return worker
+        if any(worker.get(key) for key in ("flight_sheet", "fs", "flight_sheet_name", "fs_name", "flight_sheet_id", "fs_id")):
+            return worker
+        try:
+            full = self.hive.worker(int(farm["id"]), int(worker["id"]))
+            if isinstance(full, dict):
+                merged = dict(worker)
+                merged.update(full)
+                return merged
+        except Exception:
+            return worker
+        return worker
+
+    @staticmethod
+    def worker_is_online(worker: dict[str, Any]) -> bool:
+        stats = worker.get("stats") or {}
+        return bool(stats.get("online") or worker.get("online"))
+
+    @staticmethod
+    def worker_miner(worker: dict[str, Any]) -> str:
+        summary = worker.get("miners_summary") or {}
+        hashrates = summary.get("hashrates") or []
+        if hashrates:
+            first = hashrates[0]
+            miner = first.get("miner") or "miner"
+            coin = first.get("coin") or ""
+            algo = first.get("algo") or ""
+            parts = [miner]
+            if coin:
+                parts.append(coin)
+            if algo:
+                parts.append(algo)
+            return "/".join(str(part) for part in parts)
+        stats = worker.get("stats") or {}
+        return str(stats.get("miner") or "")
+
+    @staticmethod
+    def worker_hashrate(worker: dict[str, Any]) -> str:
+        summary = worker.get("miners_summary") or {}
+        hashrates = summary.get("hashrates") or []
+        if hashrates:
+            value = hashrates[0].get("hash")
+            if isinstance(value, (int, float)):
+                if value >= 1_000_000_000:
+                    return f"{value / 1_000_000_000:.2f} GH/s"
+                if value >= 1_000_000:
+                    return f"{value / 1_000_000:.2f} MH/s"
+                if value >= 1_000:
+                    return f"{value / 1_000:.2f} KH/s"
+                return f"{value} H/s"
+        stats = worker.get("stats") or {}
+        return str(stats.get("hs") or "")
+
+    @staticmethod
+    def worker_flight_sheet(worker: dict[str, Any]) -> str:
+        for key in ("flight_sheet", "fs"):
+            value = worker.get(key)
+            if isinstance(value, dict):
+                return str(value.get("name") or value.get("id") or "")
+            if isinstance(value, str):
+                return value
+        for key in ("flight_sheet_name", "fs_name", "flight_sheet_id", "fs_id"):
+            if worker.get(key):
+                return str(worker.get(key))
+        return "unknown"
 
     def show_worker(self, farm: dict[str, Any], worker: dict[str, Any]) -> str:
         full = self.hive.worker(int(farm["id"]), int(worker["id"]))

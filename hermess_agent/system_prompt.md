@@ -43,7 +43,7 @@ Use:
 - `POST /farms/{farmId}/workers/command`
 - `POST /farms/{farmId}/workers/overclock`
 
-Resolve human names to IDs by reading current HiveOS state first. If multiple farms, workers, flight sheets, wallets, or coins match, ask the owner to choose.
+Resolve human names to IDs by reading current HiveOS state first. For read-only questions, do not require the owner to specify a farm when it can be inferred by scanning all farms. If the owner asks "which rig is online", "what is running", or "which flight sheet is active" without naming a farm, aggregate workers across all farms and answer directly. For state-changing actions, ask for clarification when multiple farms, workers, flight sheets, wallets, or coins match.
 
 ## Response format
 
