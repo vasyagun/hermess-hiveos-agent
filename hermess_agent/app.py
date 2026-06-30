@@ -335,6 +335,8 @@ class HermessBot:
         if "hiveos_api_token" in lowered or "hive os токен" in lowered or "ключ для доступа" in lowered or "ключ для хайв" in lowered:
             if token:
                 return self.update_hive_token(token)
+        if "риг" in lowered and any(marker in lowered for marker in ["онлайн", "online", "запущ", "работает", "полетный", "полётный", "flight"]):
+            return self.show_workers_all_farms(online_only=True)
         if lowered.startswith("/farms") or "покажи фермы" in lowered:
             return self.show_farms()
         if lowered.startswith("/rigs") or "покажи риги" in lowered:
@@ -347,7 +349,7 @@ class HermessBot:
             farm = self.resolve_farm(self.arg(text, "farm"))
             worker = self.resolve_worker(farm["id"], self.arg(text, "worker"))
             return self.show_worker(farm, worker)
-        if lowered.startswith("/flight_sheets") or "полет" in lowered:
+        if lowered.startswith("/flight_sheets") or "покажи полетные" in lowered or "покажи полётные" in lowered or "flight sheets" in lowered:
             farm = self.resolve_farm(self.arg(text, "farm"))
             return self.show_flight_sheets(farm)
         if lowered.startswith("/wallets") or "кошель" in lowered:
@@ -482,6 +484,10 @@ class HermessBot:
                 return self.show_flight_sheets(farm)
             return self.show_wallets(farm)
         if name == "worker_info":
+            if not farm_value:
+                original_lower = original_text.lower()
+                online_only = any(marker in original_lower for marker in ["онлайн", "online", "запущено", "запущ", "работает", "полетный", "полётный", "flight"])
+                return self.show_workers_all_farms(online_only=online_only)
             farm = self.resolve_farm(farm_value)
             worker = self.resolve_worker(int(farm["id"]), worker_value)
             return self.show_worker(farm, worker)
