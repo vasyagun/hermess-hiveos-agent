@@ -55,6 +55,8 @@ Telegram user
 - `GONKA_CONTEXT_RESERVE_TOKENS` зарезервирован под логи, tool output и рабочий план;
 - длинные логи, README, GitHub release notes и install guides должны идти через chunking/summarization, а не целиком одним запросом;
 - состояние долгих задач хранится вне модели: `tmux`, `systemd`, PID, logs, `hermess-state.json`.
+- краткая память Telegram-чата хранится в `HERMESS_MEMORY_PATH`, секреты перед записью маскируются;
+- переменная `HIVEOS_API_TOKEN` может быть обновлена из Telegram владельцем: бот применяет новый токен в runtime и пишет его в mounted `.env`.
 
 Рекомендуемые значения для `moonshotai/Kimi-K2.6`:
 
@@ -87,6 +89,9 @@ HIVEOS_API_TOKEN=...
 TELEGRAM_BOT_TOKEN=...
 TELEGRAM_ALLOWED_CHAT_IDS=...
 TELEGRAM_ALLOWED_USER_IDS=...
+HERMESS_MEMORY_PATH=/var/log/hermess/chat_memory.json
+HERMESS_MAX_MEMORY_MESSAGES=40
+HERMESS_ENV_FILE=/config/.env
 ```
 
 ## HiveOS API reference

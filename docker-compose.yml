@@ -7,7 +7,7 @@ services:
       - .env
     volumes:
       - hermess_logs:/var/log/hermess
+      - ./.env:/config/.env
 
 volumes:
   hermess_logs:
-

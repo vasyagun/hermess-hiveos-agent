@@ -43,6 +43,21 @@ def mask(value: str, keep: int = 6) -> str:
     return f"{value[:keep]}...{value[-keep:]}"
 
 
+JWT_RE = re.compile(r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b")
+BOT_TOKEN_RE = re.compile(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b")
+
+
+def extract_jwt(text: str) -> str:
+    match = JWT_RE.search(text)
+    return match.group(0) if match else ""
+
+
+def redact_text(text: str) -> str:
+    text = JWT_RE.sub("[REDACTED_JWT]", text)
+    text = BOT_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", text)
+    return text
+
+
 def table(headers: list[str], rows: list[list[Any]]) -> str:
     if not rows:
         return "Нет данных."
@@ -220,11 +235,48 @@ class HermessBot:
         self.approval_ttl = int(env("HERMESS_APPROVAL_TTL_SECONDS", "300"))
         self.pending: dict[str, PendingAction] = {}
         self.audit_log = env("HERMESS_AUDIT_LOG", "/var/log/hermess/audit.log")
+        self.memory_path = env("HERMESS_MEMORY_PATH", "/var/log/hermess/chat_memory.json")
+        self.env_file = env("HERMESS_ENV_FILE", "/config/.env")
+        self.max_memory_messages = env_int("HERMESS_MAX_MEMORY_MESSAGES", 40)
+        self.chat_memory: dict[str, list[dict[str, str]]] = self.load_memory()
         os.makedirs(os.path.dirname(self.audit_log), exist_ok=True)
 
     @staticmethod
     def _parse_ids(raw: str) -> set[int]:
         return {int(part) for part in re.split(r"[,\s]+", raw) if part.strip().lstrip("-").isdigit()}
+
+    def load_memory(self) -> dict[str, list[dict[str, str]]]:
+        try:
+            with open(self.memory_path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            if isinstance(payload, dict):
+                return {str(k): v for k, v in payload.items() if isinstance(v, list)}
+        except FileNotFoundError:
+            return {}
+        except Exception as exc:
+            print(f"memory load error: {exc}", flush=True)
+        return {}
+
+    def save_memory(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.memory_path), exist_ok=True)
+            with open(self.memory_path, "w", encoding="utf-8") as fh:
+                json.dump(self.chat_memory, fh, ensure_ascii=False)
+        except Exception as exc:
+            print(f"memory save error: {exc}", flush=True)
+
+    def remember(self, chat_id: int, role: str, text: str) -> None:
+        key = str(chat_id)
+        messages = self.chat_memory.setdefault(key, [])
+        messages.append({"role": role, "text": redact_text(text), "ts": str(int(time.time()))})
+        del messages[:-self.max_memory_messages]
+        self.save_memory()
+
+    def recent_context(self, chat_id: int, limit: int = 16) -> str:
+        messages = self.chat_memory.get(str(chat_id), [])[-limit:]
+        if not messages:
+            return "Истории чата пока нет."
+        return "\n".join(f"{item.get('role')}: {item.get('text')}" for item in messages)
 
     def run(self) -> None:
         offset: int | None = None
@@ -252,6 +304,8 @@ class HermessBot:
         except Exception as exc:
             reply = f"Ошибка: {exc}"
         self.telegram.send(chat_id, reply)
+        self.remember(chat_id, "user", text)
+        self.remember(chat_id, "assistant", reply)
 
     def authorized(self, chat_id: int, user_id: int) -> bool:
         chat_ok = not self.allowed_chats or chat_id in self.allowed_chats
@@ -267,11 +321,20 @@ class HermessBot:
             return self.greeting()
         if any(phrase in lowered for phrase in ["что ты умеешь", "что умеешь", "что можешь"]):
             return self.help()
+        if any(phrase in lowered for phrase in ["о чем мы говорили", "что мы обсуждали", "напомни контекст", "что было выше"]):
+            return self.summarize_memory(chat_id)
         if lowered.startswith("confirm "):
             return self.confirm(chat_id, text.split(maxsplit=1)[1].strip())
         if lowered.startswith("/ask ") or lowered.startswith("спроси "):
             prompt = text.split(maxsplit=1)[1]
-            return self.gonka.ask(prompt)
+            return self.gonka.ask(self.with_context(chat_id, prompt))
+        token = extract_jwt(text)
+        token_context = (lowered + "\n" + self.recent_context(chat_id).lower())
+        if token and any(marker in token_context for marker in ["hive", "хайв", "hiveos_api_token", "401", "токен", "ключ"]):
+            return self.update_hive_token(token)
+        if "hiveos_api_token" in lowered or "hive os токен" in lowered or "ключ для доступа" in lowered or "ключ для хайв" in lowered:
+            if token:
+                return self.update_hive_token(token)
         if lowered.startswith("/farms") or "покажи фермы" in lowered:
             return self.show_farms()
         if lowered.startswith("/rigs") or "покажи риги" in lowered:
@@ -355,22 +418,23 @@ class HermessBot:
 
     def handle_natural_text(self, chat_id: int, text: str) -> str:
         try:
-            intent = self.interpret_intent(text)
+            intent = self.interpret_intent(chat_id, text)
             return self.execute_intent(chat_id, text, intent)
         except Exception as exc:
-            return self.free_chat(text)
+            return self.free_chat(chat_id, text)
 
-    def interpret_intent(self, text: str) -> dict[str, Any]:
+    def interpret_intent(self, chat_id: int, text: str) -> dict[str, Any]:
         prompt = "\n".join(
             [
                 "Ты intent parser для Telegram-агента hermess.",
                 "Верни строго один JSON object без markdown и без пояснений.",
                 "Пользователь пишет по-русски обычным текстом. Определи намерение и параметры.",
+                "Учитывай историю чата: пользователь может писать 'что это значит', 'вот опять', 'замени его' после предыдущей ошибки.",
                 "Допустимые intent:",
                 "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list,",
-                "hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy.",
+                "hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy, update_hive_token.",
                 "Поля JSON:",
-                '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","reply":"short-reply-for-chat-or-empty"}',
+                '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
                 "Правила:",
                 "- если пользователь хочет список ферм: farms_list;",
                 "- если хочет риги/воркеры: workers_list;",
@@ -381,7 +445,11 @@ class HermessBot:
                 "- если хочет применить полетный лист/flight sheet: apply_fs;",
                 "- если хочет кошельки: wallets_list;",
                 "- если хочет монеты: coins_list;",
+                "- если пользователь прислал новый HIVEOS_API_TOKEN/JWT и просит заменить ключ HiveOS: update_hive_token;",
+                "- если пользователь спрашивает 'что это значит' после ошибки 401: chat с объяснением, что HiveOS токен не авторизован;",
                 "- если это разговор без действия: chat и короткий reply.",
+                "История чата:",
+                self.recent_context(chat_id),
                 f"Сообщение: {text}",
             ]
         )
@@ -455,11 +523,82 @@ class HermessBot:
             return "Понял задачу развернуть ноду. Для этого я сначала подниму Hive Shell и буду вести long-running установку через tmux/systemd. Подтверди параметры или дополни командой:\n" + f"/node_deploy{farm_hint}{worker_hint}{repo_hint}"
         if name == "package_miner":
             return "Понял задачу по упаковке майнера для HiveOS. Пришли архив/путь к бинарнику, стартовый скрипт или логи, и имя custom miner."
+        if name == "update_hive_token":
+            token = str(intent.get("token") or "").strip() or extract_jwt(original_text)
+            if not token:
+                return "Понял, надо заменить HIVEOS_API_TOKEN. Пришли сам JWT токен одним сообщением."
+            return self.update_hive_token(token)
 
         reply = str(intent.get("reply") or "").strip()
         if reply:
             return reply
-        return self.free_chat(original_text)
+        return self.free_chat(chat_id, original_text)
+
+    def with_context(self, chat_id: int, prompt: str) -> str:
+        return "\n".join(
+            [
+                "История текущего Telegram-чата:",
+                self.recent_context(chat_id),
+                "",
+                "Текущее сообщение:",
+                prompt,
+            ]
+        )
+
+    def summarize_memory(self, chat_id: int) -> str:
+        context = self.recent_context(chat_id, limit=24)
+        prompt = "\n".join(
+            [
+                "Кратко напомни пользователю по-русски, о чем шла текущая переписка.",
+                "Не раскрывай токены и секреты. Если в истории есть [REDACTED_JWT], называй это 'HiveOS token'.",
+                "Сделай акцент на нерешенных проблемах и следующем действии.",
+                "",
+                context,
+            ]
+        )
+        try:
+            return self.gonka.ask(prompt)
+        except Exception:
+            return "Мы обсуждали управление HiveOS через hermess, ошибку 401 от HiveOS API, замену HIVEOS_API_TOKEN и то, что боту нужна память контекста между сообщениями."
+
+    def update_hive_token(self, token: str) -> str:
+        old_token = self.hive.token
+        self.hive.token = token
+        persisted = self.write_env_value("HIVEOS_API_TOKEN", token)
+        try:
+            farms = self.hive.farms()
+            validation = f"Проверка HiveOS прошла: доступно ферм: {len(farms)}."
+        except Exception as exc:
+            validation = f"Токен записан, но проверка HiveOS пока не прошла: {exc}"
+            if not persisted:
+                self.hive.token = old_token
+        status = "записан в .env и применен в runtime" if persisted else "применен только в runtime, .env недоступен для записи"
+        return f"Принял новый HIVEOS_API_TOKEN ({mask(token)}), {status}. {validation}"
+
+    def write_env_value(self, key: str, value: str) -> bool:
+        if not self.env_file:
+            return False
+        try:
+            lines: list[str] = []
+            if os.path.exists(self.env_file):
+                with open(self.env_file, "r", encoding="utf-8") as fh:
+                    lines = fh.read().splitlines()
+            replaced = False
+            next_lines: list[str] = []
+            for line in lines:
+                if line.startswith(f"{key}="):
+                    next_lines.append(f"{key}={value}")
+                    replaced = True
+                else:
+                    next_lines.append(line)
+            if not replaced:
+                next_lines.append(f"{key}={value}")
+            with open(self.env_file, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(next_lines).rstrip() + "\n")
+            return True
+        except Exception as exc:
+            print(f"env update error: {exc}", flush=True)
+            return False
 
     @staticmethod
     def parse_json_object(raw: str) -> dict[str, Any]:
@@ -475,7 +614,7 @@ class HermessBot:
             raise ValueError("Intent response is not an object")
         return parsed
 
-    def free_chat(self, text: str) -> str:
+    def free_chat(self, chat_id: int, text: str) -> str:
         prompt = "\n".join(
             [
                 "Пользователь написал hermess в Telegram свободным текстом.",
@@ -485,6 +624,8 @@ class HermessBot:
                 "Доступные команды:",
                 self.help(),
                 "",
+                "История чата:",
+                self.recent_context(chat_id),
                 f"Сообщение пользователя: {text}",
             ]
         )

@@ -3,3 +3,4 @@
 hiveos_swagger_tmp*.json
 __pycache__/
 *.pyc
+TEXT.md
