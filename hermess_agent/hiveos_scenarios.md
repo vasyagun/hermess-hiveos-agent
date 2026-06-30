@@ -10,6 +10,46 @@ Accept: application/json
 Content-Type: application/json
 ```
 
+## 0. Natural language interpretation layer
+
+The Telegram user is not required to send slash commands. The agent must process each free-form message through this pipeline:
+
+1. Understand the task in plain Russian.
+2. Extract entities:
+   - `farm`: farm id/name, or empty when unknown;
+   - `worker`: rig/worker id/name, "this rig", "single online rig";
+   - `coin`: coin symbol/name such as `PEARL`;
+   - `flight_sheet`: flight sheet id/name;
+   - `wallet`: wallet id/name/coin;
+   - `action`: read-only, shell, restart, apply flight sheet, balance, package miner, deploy node.
+3. Map entities to HiveOS objects by reading live HiveOS state.
+4. Decide whether the task is read-only or state-changing.
+5. For read-only tasks, execute immediately and answer with the result.
+6. For state-changing tasks, show a dry-run plan and wait for `CONFIRM <id>`.
+7. If something is ambiguous, answer what was understood and ask for the missing entity. Do not fall back to a generic help message.
+
+Core abstractions:
+
+| User object | HiveOS object | Discovery API |
+| --- | --- | --- |
+| farm / ферма | farm | `GET /farms` |
+| rig / риг / worker / сервер | worker | `GET /farms/{farmId}/workers` |
+| current online rig / единственный онлайн риг | online worker across all farms | `GET /farms`, then `GET /farms/{farmId}/workers` |
+| flight sheet / полетный лист | fs | `GET /farms/{farmId}/fs` |
+| coin / монета | coin symbol in fs/items/coins | `GET /hive/coins`, `GET /farms/{farmId}/fs` |
+| wallet / кошелек | wallet | `GET /farms/{farmId}/wallets` |
+| Hive Shell / hssh | worker command | `POST /farms/{farmId}/workers/{workerId}/command` |
+| balance / деньги / остаток | account billing fields | `GET /account` |
+
+High-confidence local intents must be handled before calling the model:
+
+- `Какие полетные листы есть для монеты PEARL?` -> list flight sheets filtered by coin `PEARL`.
+- `Какой риг онлайн и что там запущено?` -> scan all farms and show online workers with miner and flight sheet.
+- `Сгенерируй hive shell ссылку для моего единственного рига который сейчас онлайн` -> find the single online worker and start `hssh`.
+- `Сколько денег осталось на балансе Hive аккаунта?` -> read account balance.
+
+The model layer is still used for less obvious requests. Its job is not to execute code directly; it returns a structured intent with extracted entities. The execution layer then verifies entities against HiveOS and performs the safe API workflow.
+
 ## 1. Show farm names
 
 Telegram:
@@ -68,6 +108,8 @@ GET /farms/{farmId}/workers
 ```
 
 Return online workers across all farms with farm name, worker name/id, miner, coin/algo, hashrate, and flight sheet if available.
+
+If exactly one worker is online, remember it as the current rig context for follow-up phrases like "этот риг", "мой единственный риг", or "онлайн риг".
 
 ## 3. Show one rig card
 
@@ -170,6 +212,34 @@ KAS | Kaspa | kHeavyHash
 ```
 
 For pools, show pool name, URLs, SSL support if returned by API.
+
+Important: if the user asks "полетные листы для монеты PEARL", do not call `/hive/coins` as the main answer. The correct object is `flight sheet`, filtered by `coin=PEARL` across the available farms.
+
+## 6.1. Show HiveOS account balance
+
+Telegram:
+
+```text
+Сколько денег у меня осталось на балансе hive аккаунта?
+Покажи баланс HiveOS
+```
+
+API:
+
+```http
+GET /account
+```
+
+Output:
+
+```text
+field | value
+balance | ...
+deposit | ...
+credit | ...
+```
+
+The exact HiveOS response can vary. Extract fields whose names indicate billing or money: `balance`, `deposit`, `credit`, `debt`, `paid`, `unpaid`, `money`, `usd`, `billing`. If the response does not expose an obvious balance field, show a short redacted account summary and say that no explicit balance field was found.
 
 ## 7. Apply a flight sheet to a rig
 

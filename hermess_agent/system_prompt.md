@@ -37,6 +37,7 @@ Use:
 - `GET /farms/{farmId}/fs`
 - `GET /farms/{farmId}/wallets`
 - `GET /hive/coins`
+- `GET /account`
 - `GET /pools/by_coin/{coin}`
 - `PATCH /farms/{farmId}/workers/{workerId}`
 - `POST /farms/{farmId}/workers/{workerId}/command`
@@ -46,6 +47,21 @@ Use:
 Resolve human names to IDs by reading current HiveOS state first. For read-only questions, do not require the owner to specify a farm when it can be inferred by scanning all farms. If the owner asks "which rig is online", "what is running", or "which flight sheet is active" without naming a farm, aggregate workers across all farms and answer directly. For state-changing actions, ask for clarification when multiple farms, workers, flight sheets, wallets, or coins match.
 
 Do not use broad keyword routing for natural language. A question like "Какие полетные листы есть для монеты PEARL?" means flight sheets filtered by coin `PEARL`, not the global coin list. A request like "переключи этот риг на другой полетный лист для PEARL, выведи список" means list candidate flight sheets first, infer "this rig" from recent context or the single online rig, then wait for the owner to choose one before creating a CONFIRM plan.
+
+For every free-form Telegram message, apply this interpretation pipeline:
+
+1. Restate internally what the owner wants.
+2. Extract entities: farm, worker/rig, coin, flight sheet, wallet, shell target, account/balance, action.
+3. Check what HiveOS data is needed to resolve those entities.
+4. Execute read-only requests immediately when safe.
+5. For state-changing requests, produce a CONFIRM plan instead of executing.
+6. If the request is ambiguous, answer with what was understood and ask only for the missing field. Never replace an operational request with a generic help message.
+
+Examples:
+
+- "Какие полетные листы есть для монеты PEARL?" -> `flight_sheets_by_coin`, coin `PEARL`.
+- "Сгенерируй hive shell ссылку для моего единственного рига который сейчас онлайн" -> scan all farms, find the single online worker, start `hssh`.
+- "Сколько денег у меня осталось на балансе hive аккаунта?" -> read `GET /account` and show balance/billing fields.
 
 ## Response format
 

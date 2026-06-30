@@ -200,6 +200,10 @@ class HiveOS:
     def coins(self) -> list[dict[str, Any]]:
         return self._data(self.request("GET", "/hive/coins"))
 
+    def account(self) -> dict[str, Any]:
+        payload = self.request("GET", "/account")
+        return payload if isinstance(payload, dict) else {}
+
     @staticmethod
     def _data(payload: Any) -> list[dict[str, Any]]:
         if isinstance(payload, dict) and isinstance(payload.get("data"), list):
@@ -438,6 +442,10 @@ class HermessBot:
         if has_flight_term and any(marker in lowered for marker in ["какие", "покажи", "список", "есть", "выведи"]):
             return {"intent": "flight_sheets_list"}
 
+        if any(marker in lowered for marker in ["подключ", "терминал", "shell", "hssh"]):
+            return {"intent": "hssh"}
+        if any(marker in lowered for marker in ["баланс", "деньг", "сколько осталось", "остаток", "account balance"]):
+            return {"intent": "account_balance"}
         if "ферм" in lowered and any(marker in lowered for marker in ["какие", "покажи", "список", "есть"]):
             return {"intent": "farms_list"}
         if "кошел" in lowered:
@@ -448,8 +456,6 @@ class HermessBot:
         has_worker_word = any(marker in lowered for marker in ["риг", "worker", "воркер", "сервер"])
         if has_worker_word and any(marker in lowered for marker in ["онлайн", "online", "запущ", "работает", "полет", "полёт", "flight"]):
             return {"intent": "workers_list"}
-        if any(marker in lowered for marker in ["подключ", "терминал", "shell", "hssh"]):
-            return {"intent": "hssh"}
         if any(marker in lowered for marker in ["перезапусти майнер", "рестарт майнер", "restart miner"]):
             return {"intent": "miner_restart"}
         return None
@@ -462,11 +468,13 @@ class HermessBot:
                 "Пользователь пишет по-русски обычным текстом. Определи намерение и параметры.",
                 "Учитывай историю чата: пользователь может писать 'что это значит', 'вот опять', 'замени его' после предыдущей ошибки.",
                 "Допустимые intent:",
-                "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list,",
+                "help, chat, farms_list, workers_list, worker_info, flight_sheets_list, wallets_list, coins_list, account_balance,",
                 "flight_sheets_by_coin, hssh, miner_restart, apply_fs, set_oc, exec, package_miner, node_deploy, update_hive_token.",
                 "Поля JSON:",
                 '{"intent":"...","farm":"id-or-name-or-empty","worker":"id-or-name-or-empty","fs":"id-or-name-or-empty","coin":"coin-symbol-or-empty","oc":"id-or-empty","cmd":"shell-command-or-empty","repo":"url-or-empty","token":"jwt-or-empty","reply":"short-reply-for-chat-or-empty"}',
                 "Правила:",
+                "- сначала осмысли задачу, затем выдели сущности: farm, worker/rig, coin, flight sheet, wallet, action, safety;",
+                "- проверь, какие данные нужны: если это чтение, можно сканировать все фермы; если запись, нужна однозначная сущность и CONFIRM;",
                 "- если пользователь хочет список ферм: farms_list;",
                 "- если хочет риги/воркеры, спрашивает кто онлайн, что сейчас запущено или какой полетный лист: workers_list;",
                 "- если спрашивает про конкретный rig/риг/worker: worker_info;",
@@ -479,6 +487,7 @@ class HermessBot:
                 "- если хочет применить полетный лист/flight sheet: apply_fs;",
                 "- если хочет кошельки: wallets_list;",
                 "- если хочет монеты: coins_list;",
+                "- если спрашивает баланс HiveOS аккаунта, сколько денег осталось или account balance: account_balance;",
                 "- если пользователь прислал новый HIVEOS_API_TOKEN/JWT и просит заменить ключ HiveOS: update_hive_token;",
                 "- если пользователь спрашивает 'что это значит' после ошибки 401: chat с объяснением, что HiveOS токен не авторизован;",
                 "- если это разговор без действия: chat и короткий reply.",
@@ -504,6 +513,8 @@ class HermessBot:
             return self.show_farms()
         if name == "coins_list":
             return self.show_coins()
+        if name == "account_balance":
+            return self.show_account_balance()
         if name == "flight_sheets_by_coin":
             return self.show_flight_sheets_by_coin(farm_value, coin_value, original_text)
         if name in {"workers_list", "flight_sheets_list", "wallets_list"}:
@@ -530,8 +541,14 @@ class HermessBot:
             worker = self.resolve_worker(int(farm["id"]), worker_value)
             return self.show_worker(farm, worker)
         if name == "hssh":
-            farm = self.resolve_farm(farm_value)
-            worker = self.resolve_worker(int(farm["id"]), worker_value)
+            if not farm_value and not worker_value:
+                context = self.single_online_worker()
+                if not context:
+                    return "Понял: нужна Hive Shell ссылка. Не могу выбрать риг автоматически: укажи farm/worker или сначала попроси показать онлайн-риги."
+                farm, worker = context
+            else:
+                farm = self.resolve_farm(farm_value)
+                worker = self.resolve_worker(int(farm["id"]), worker_value)
             return self.start_hssh(farm, worker)
         if name == "miner_restart":
             farm = self.resolve_farm(farm_value)
@@ -928,6 +945,28 @@ class HermessBot:
         coins = self.hive.coins()[:120]
         rows = [[c.get("coin") or c.get("symbol") or c.get("name"), c.get("name", ""), c.get("algo", "")] for c in coins]
         return table(["symbol", "name", "algo"], rows)
+
+    def show_account_balance(self) -> str:
+        account = self.hive.account()
+        rows = self.balance_rows(account)
+        if rows:
+            return "Баланс HiveOS аккаунта:\n" + table(["field", "value"], rows)
+        return "Получил данные аккаунта HiveOS, но не нашел явных полей баланса. Краткий ответ API:\n" + json.dumps(self.redact(account), ensure_ascii=False, indent=2)[:2500]
+
+    def balance_rows(self, payload: Any, prefix: str = "") -> list[list[Any]]:
+        rows: list[list[Any]] = []
+        if isinstance(payload, dict):
+            for key, value in payload.items():
+                name = f"{prefix}.{key}" if prefix else str(key)
+                key_lower = str(key).lower()
+                if isinstance(value, (dict, list)):
+                    rows.extend(self.balance_rows(value, name))
+                elif any(marker in key_lower for marker in ["balance", "deposit", "credit", "debt", "paid", "unpaid", "money", "usd", "billing"]):
+                    rows.append([name, value])
+        elif isinstance(payload, list):
+            for index, item in enumerate(payload[:10]):
+                rows.extend(self.balance_rows(item, f"{prefix}[{index}]"))
+        return rows[:30]
 
     def start_hssh(self, farm: dict[str, Any], worker: dict[str, Any]) -> str:
         started_at = int(time.time()) - 5
