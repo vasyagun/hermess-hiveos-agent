@@ -408,10 +408,51 @@ class HermessBot:
 
     def handle_natural_text(self, chat_id: int, text: str) -> str:
         try:
-            intent = self.interpret_intent(chat_id, text)
+            intent = self.local_intent(chat_id, text)
+            if intent is None:
+                intent = self.interpret_intent(chat_id, text)
             return self.execute_intent(chat_id, text, intent)
         except Exception as exc:
+            print(f"natural intent error: {exc}", flush=True)
             return self.free_chat(chat_id, text)
+
+    def local_intent(self, chat_id: int, text: str) -> dict[str, Any] | None:
+        lowered = text.lower()
+        context = f"{lowered}\n{self.recent_context(chat_id).lower()}"
+        token = extract_jwt(text)
+        if token and any(marker in context for marker in ["hive", "hiveos", "хайв", "токен", "ключ", "401"]):
+            return {"intent": "update_hive_token", "token": token}
+
+        if any(marker in lowered for marker in ["о чем мы говорили", "о чём мы говорили", "что было раньше", "напомни контекст"]):
+            return {"intent": "memory_summary"}
+        if any(marker in lowered for marker in ["что умеешь", "помощь", "help"]):
+            return {"intent": "help"}
+        if lowered.strip() in {"привет", "здарова", "здравствуй", "добрый день", "добрый вечер", "hello", "hi"}:
+            return {"intent": "chat", "reply": self.greeting()}
+
+        has_flight_term = any(marker in lowered for marker in ["полет", "полёт", "flight sheet", "flight sheets", "fs"])
+        has_coin_word = any(marker in lowered for marker in ["монет", "coin"])
+        coin = self.extract_coin_hint(text) if has_flight_term else ""
+        if has_flight_term and coin:
+            return {"intent": "flight_sheets_by_coin", "coin": coin}
+        if has_flight_term and any(marker in lowered for marker in ["какие", "покажи", "список", "есть", "выведи"]):
+            return {"intent": "flight_sheets_list"}
+
+        if "ферм" in lowered and any(marker in lowered for marker in ["какие", "покажи", "список", "есть"]):
+            return {"intent": "farms_list"}
+        if "кошел" in lowered:
+            return {"intent": "wallets_list"}
+        if has_coin_word and not has_flight_term and any(marker in lowered for marker in ["какие", "покажи", "список", "есть"]):
+            return {"intent": "coins_list"}
+
+        has_worker_word = any(marker in lowered for marker in ["риг", "worker", "воркер", "сервер"])
+        if has_worker_word and any(marker in lowered for marker in ["онлайн", "online", "запущ", "работает", "полет", "полёт", "flight"]):
+            return {"intent": "workers_list"}
+        if any(marker in lowered for marker in ["подключ", "терминал", "shell", "hssh"]):
+            return {"intent": "hssh"}
+        if any(marker in lowered for marker in ["перезапусти майнер", "рестарт майнер", "restart miner"]):
+            return {"intent": "miner_restart"}
+        return None
 
     def interpret_intent(self, chat_id: int, text: str) -> dict[str, Any]:
         prompt = "\n".join(
@@ -457,6 +498,8 @@ class HermessBot:
 
         if name == "help":
             return self.help()
+        if name == "memory_summary":
+            return self.summarize_memory(chat_id)
         if name == "farms_list":
             return self.show_farms()
         if name == "coins_list":
@@ -468,6 +511,10 @@ class HermessBot:
                 original_lower = original_text.lower()
                 online_only = any(marker in original_lower for marker in ["онлайн", "online", "запущено", "работает", "активен"])
                 return self.show_workers_all_farms(online_only=online_only)
+            if name == "flight_sheets_list" and not farm_value:
+                return self.show_flight_sheets_all_farms()
+            if name == "wallets_list" and not farm_value:
+                return self.show_wallets_all_farms()
             farm = self.resolve_farm(farm_value)
             if name == "workers_list":
                 return self.show_workers(farm)
@@ -757,6 +804,16 @@ class HermessBot:
         rows = [[fs.get("id"), fs.get("name"), fs.get("workers_count", ""), len(fs.get("items") or [])] for fs in sheets]
         return f"Farm: {farm.get('name')} ({farm.get('id')})\n" + table(["id", "name", "workers", "items"], rows)
 
+    def show_flight_sheets_all_farms(self) -> str:
+        rows: list[list[Any]] = []
+        farms = self.hive.farms()
+        for farm in farms:
+            for sheet in self.hive.flight_sheets(int(farm["id"])):
+                rows.append([farm.get("name"), sheet.get("id"), sheet.get("name"), sheet.get("workers_count", ""), len(sheet.get("items") or [])])
+        if not rows:
+            return f"Flight sheets не нашел. Проверено ферм: {len(farms)}."
+        return f"Flight sheets по всем фермам: {len(rows)}\n" + table(["farm", "id", "name", "workers", "items"], rows)
+
     def show_flight_sheets_by_coin(self, farm_value: str, coin_value: str, original_text: str) -> str:
         coin = coin_value or self.extract_coin_hint(original_text)
         if not coin:
@@ -856,6 +913,16 @@ class HermessBot:
         wallets = self.hive.wallets(int(farm["id"]))
         rows = [[w.get("id"), w.get("name"), w.get("coin"), mask(str(w.get("wal") or "")), w.get("workers_count", "")] for w in wallets]
         return f"Farm: {farm.get('name')} ({farm.get('id')})\n" + table(["id", "name", "coin", "wallet", "workers"], rows)
+
+    def show_wallets_all_farms(self) -> str:
+        rows: list[list[Any]] = []
+        farms = self.hive.farms()
+        for farm in farms:
+            for wallet in self.hive.wallets(int(farm["id"])):
+                rows.append([farm.get("name"), wallet.get("id"), wallet.get("name"), wallet.get("coin"), mask(str(wallet.get("wal") or "")), wallet.get("workers_count", "")])
+        if not rows:
+            return f"Кошельки не нашел. Проверено ферм: {len(farms)}."
+        return f"Кошельки по всем фермам: {len(rows)}\n" + table(["farm", "id", "name", "coin", "wallet", "workers"], rows)
 
     def show_coins(self) -> str:
         coins = self.hive.coins()[:120]
